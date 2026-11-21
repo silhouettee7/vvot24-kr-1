@@ -1,0 +1,134 @@
+openapi: 3.0.0
+info:
+  title: File archiving API
+  version: 1.0.0
+  description: Асинхронное архивирование файлов через Yandex Message Queue.
+x-yc-apigateway:
+  service_account_id: '${gateway_service_account_id}'
+paths:
+  /tasks:
+    post:
+      operationId: createTask
+      summary: Поставить файл в очередь архивирования
+      x-yc-apigateway-validator:
+        validateRequestBody: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Task'
+      responses:
+        '200':
+          description: Внутренний успешный ответ SendMessage; клиент получает 202.
+          x-yc-status-mapping: 202
+        '202':
+          description: Задание принято; архив появится асинхронно.
+        '400':
+          description: Неверное тело задания.
+      x-yc-apigateway-integration:
+        type: cloud_ymq
+        action: SendMessage
+        queue_url: '${queue_url}'
+        folder_id: '${folder_id}'
+        payload_format_type: body
+  /archives:
+    get:
+      operationId: listArchives
+      summary: Получить список готовых архивов
+      responses:
+        '200':
+          description: Список архивов 
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Archive'
+      x-yc-apigateway-integration:
+        type: cloud_ydb
+        action: Scan
+        database: '${database_path}'
+        table_name: archives
+  /archives/{key}:
+    get:
+      operationId: getArchive
+      summary: Получить сведения об архиве
+      parameters:
+        - $ref: '#/components/parameters/ArchiveKey'
+      responses:
+        '200':
+          description: Сведения об архиве.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Archive'
+        '404':
+          description: Архив не найден.
+      x-yc-apigateway-integration:
+        type: cloud_ydb
+        action: GetItem
+        database: '${database_path}'
+        table_name: archives
+        key: '{"key": "{key}"}'
+  /download/{key}:
+    get:
+      operationId: downloadArchive
+      summary: Скачать ZIP-архив через API Gateway
+      parameters:
+        - $ref: '#/components/parameters/ArchiveKey'
+      responses:
+        '200':
+          description: ZIP-архив.
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Объект не найден.
+      x-yc-apigateway-integration:
+        type: object_storage
+        bucket: '${bucket_name}'
+        object: '{key}'
+components:
+  parameters:
+    ArchiveKey:
+      name: key
+      in: path
+      required: true
+      schema:
+        type: string
+      example: 01971c53-76c0-7c84-8cb3-b40a30d9fed1.zip
+  schemas:
+    Task:
+      type: object
+      additionalProperties: false
+      required: [name, url]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          pattern: '^[^/\\\x00-\x1F\x7F]+$'
+          not:
+            enum: ['.', '..']
+          example: document.pdf
+        url:
+          type: string
+          format: uri
+          maxLength: 4096
+          pattern: '^https?://[^\s/@?#]+([/?#][^\s]*)?$'
+          example: https://example.com/document.pdf
+    Archive:
+      type: object
+      required: [name, url, key]
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+          format: uri
+        key:
+          type: string
+          description: UUID версии 7 с расширением .zip.
